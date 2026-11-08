@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Voice Teleprompter</title>
+<style>
+  :root{
+    --bg:#0b0b0d; --fg:#f4f4f2; --dim:#5d5d63; --accent:#ffd23f; --panel:#17171b; --line:#2a2a30;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  button,select,input{font:inherit}
+  .hidden{display:none!important}
+
+  /* ---------- Setup screen ---------- */
+  #setup{max-width:900px;margin:0 auto;padding:20px 16px 40px}
+  h1{font-size:22px;margin:4px 0 14px}
+  textarea{width:100%;min-height:45vh;background:var(--panel);color:var(--fg);border:1px solid var(--line);
+    border-radius:10px;padding:14px;font-size:18px;line-height:1.5;resize:vertical}
+  .row{display:flex;flex-wrap:wrap;gap:12px;margin:14px 0;align-items:center}
+  .row label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#aaa}
+  select,input[type=number]{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px;min-width:140px}
+  .btn{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;
+    padding:10px 14px;cursor:pointer}
+  .btn.primary{background:var(--accent);color:#111;border-color:var(--accent);font-weight:700;padding:12px 22px}
+  .hint{font-size:13px;color:#888;line-height:1.5}
+
+  /* ---------- Prompter screen ---------- */
+  #prompter{position:fixed;inset:0;background:var(--bg)}
+  #scroller{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:none}
+  #scroller::-webkit-scrollbar{display:none}
+  #script{padding:40vh 6vw 70vh;line-height:1.35;font-weight:600;word-wrap:break-word;
+    transform-origin:center}
+  #script.mirror{transform:scaleX(-1)}
+  #script .w{transition:color .2s}
+  #script .w.done{color:var(--dim)}
+  #script .w.now{color:var(--accent)}
+  #guide{position:absolute;left:0;right:0;height:0;border-top:2px solid rgba(255,210,63,.35);pointer-events:none}
+  #guide::before,#guide::after{content:"";position:absolute;top:-9px;border:8px solid transparent}
+  #guide::before{left:0;border-left-color:var(--accent)}
+  #guide::after{right:0;border-right-color:var(--accent)}
+
+  #bar{position:absolute;left:0;right:0;top:0;display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+    padding:10px 12px;background:linear-gradient(#000d,#0000);transition:opacity .4s;z-index:5}
+  #bar.fade{opacity:0}
+  #bar .btn{padding:8px 12px;font-size:14px;background:#1d1d22cc}
+  #playBtn{min-width:90px;font-weight:700}
+  #playBtn.on{background:#c0392b;border-color:#c0392b}
+  #status{font-size:13px;color:#bbb;margin-left:4px}
+  #meter{width:70px;height:8px;background:#333;border-radius:4px;overflow:hidden}
+  #meterFill{height:100%;width:0;background:#2ecc71;transition:width .08s}
+  #heard{position:absolute;left:12px;right:12px;bottom:12px;font-size:14px;color:#888;
+    text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</head>
+<body>
+
+<!-- ================= SETUP ================= -->
+<section id="setup">
+  <h1>🎤 Voice Teleprompter</h1>
+  <textarea id="text" placeholder="Paste your script here..."></textarea>
+
+  <div class="row">
+    <label>Scroll mode
+      <select id="mode">
+        <option value="speech">Follow my words (speech recognition)</option>
+        <option value="voice">Scroll while I talk (voice level)</option>
+      </select>
+    </label>
+    <label>Language
+      <select id="lang">
+        <option value="id-ID">Bahasa Indonesia</option>
+        <option value="en-US">English (US)</option>
+        <option value="en-GB">English (UK)</option>
+        <option value="ms-MY">Bahasa Melayu</option>
+        <option value="fil-PH">Filipino</option>
+        <option value="ar-SA">Arabic</option>
+        <option value="fa-IR">Farsi</option>
+      </select>
+    </label>
+    <label>Font size (px)
+      <input id="fontSize" type="number" min="24" max="200" step="4" value="64">
+    </label>
+  </div>
+
+  <div class="row">
+    <button class="btn primary" id="startBtn">Start prompter</button>
+    <button class="btn" id="pasteBtn">Paste from clipboard</button>
+    <button class="btn" id="clearBtn">Clear</button>
+  </div>
+
+  <p class="hint">
+    <b>Follow my words</b>: listens to what you say and keeps the current word on the yellow line. Best accuracy, works in Chrome / Edge (desktop and Android). Needs internet.<br>
+    <b>Scroll while I talk</b>: moves at a steady speed whenever the mic hears your voice, stops when you are quiet. Works in any browser, offline.<br>
+    Mic access needs HTTPS (GitHub Pages is fine) or localhost.<br>
+    Keys: <b>Space</b> start/pause, <b>Esc</b> back, <b>+ / -</b> font, <b>↑ ↓</b> nudge, <b>M</b> mirror, <b>R</b> restart.
+  </p>
+</section>
+
+<!-- ================= PROMPTER ================= -->
+<section id="prompter" class="hidden">
+  <div id="scroller"><div id="script"></div></div>
+  <div id="guide"></div>
+
+  <div id="bar">
+    <button class="btn" id="backBtn">✕ Edit</button>
+    <button class="btn" id="playBtn">🎤 Start mic</button>
+    <button class="btn" id="restartBtn">⟲</button>
+    <button class="btn" id="smallerBtn">A-</button>
+    <button class="btn" id="biggerBtn">A+</button>
+    <button class="btn" id="mirrorBtn">⇋ Mirror</button>
+    <span id="voiceCtrls" class="hidden" style="display:flex;gap:8px;align-items:center">
+      <button class="btn" id="slowerBtn">Speed -</button>
+      <button class="btn" id="fasterBtn">Speed +</button>
+      <button class="btn" id="sensBtn">Sens: med</button>
+    </span>
+    <span title="Mic level">🎙️</span><div id="meter"><div id="meterFill"></div></div>
+    <span id="status">Ready</span>
+  </div>
+  <div id="heard"></div>
+</section>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const store = {
+    get(k, d){ try { const v = localStorage.getItem('tp_' + k); return v === null ? d : v; } catch(e){ return d; } },
+    set(k, v){ try { localStorage.setItem('tp_' + k, v); } catch(e){} }
+  };
+
+  // ---------- state ----------
+  const GUIDE = 0.35;              // guide line at 35% of screen height
+  let spans = [];                  // all word spans
+  let W = [];                      // normalized words (only non-empty)
+  let WI = [];                     // W index -> span index
+  let cur = 0;                     // next expected word (index into W)
+  let running = false;
+  let mode = 'speech';
+  let rec = null;
+  let y = 0, targetY = 0;
+  let userScrollUntil = 0;
+  let audioCtx = null, analyser = null, micStream = null, level = 0;
+  let speed = +store.get('speed', 70);            // px per second in voice mode
+  const sensLevels = [['low',0.06],['med',0.035],['high',0.018]];
+  let sensIdx = +store.get('sens', 1);
+  let lastVoice = 0;
+  let wakeLock = null;
+  let mirror = store.get('mirror','0') === '1';
+
+  // ---------- setup screen ----------
+  $('#text').value = store.get('text', '');
+  $('#fontSize').value = store.get('font', 64);
+  $('#lang').value = store.get('lang', 'id-ID');
+  $('#mode').value = store.get('mode', 'speech');
+  if(!(window.SpeechRecognition || window.webkitSpeechRecognition)){
+    const o = $('#mode option[value=speech]');
+    o.disabled = true; o.textContent += ' - needs Chrome/Edge';
+    $('#mode').value = 'voice';
+  }
+
+  $('#pasteBtn').onclick = async () => {
+    try { $('#text').value = await navigator.clipboard.readText(); }
+    catch(e){ alert('Clipboard blocked. Long-press / Ctrl+V into the box instead.'); }
+  };
+  $('#clearBtn').onclick = () => { $('#text').value = ''; $('#text').focus(); };
+  $('#startBtn').onclick = openPrompter;
+
+  // ---------- text processing ----------
+  function norm(t){
+    return t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+            .replace(/[^\p{L}\p{N}]+/gu,'');
+  }
+  function lev1(a,b){ // edit distance <= 1 ?
+    if (Math.abs(a.length-b.length) > 1) return false;
+    let i=0,j=0,d=0;
+    while(i<a.length && j<b.length){
+      if(a[i]===b[j]){i++;j++;continue;}
+      if(++d>1) return false;
+      if(a.length>b.length) i++; else if(b.length>a.length) j++; else {i++;j++;}
+    }
+    return d + (a.length-i) + (b.length-j) <= 1;
+  }
+  function similar(a,b){
+    if(!a||!b) return false;
+    if(a===b) return true;
+    if(a.length>=4 && b.length>=4 && (a.startsWith(b)||b.startsWith(a))) return true;
+    if(a.length>=5 && b.length>=5 && lev1(a,b)) return true;
+    return false;
+  }
+
+  function buildScript(text){
+    const el = $('#script');
+    el.innerHTML = '';
+    spans = []; W = []; WI = [];
+    const frag = document.createDocumentFragment();
+    text.replace(/\r/g,'').split('\n').forEach((line, li, arr) => {
+      line.split(/(\s+)/).forEach(tok => {
+        if(!tok) return;
+        if(/^\s+$/.test(tok)){ frag.appendChild(document.createTextNode(' ')); return; }
+        const s = document.createElement('span');
+        s.className = 'w'; s.textContent = tok;
+        const n = norm(tok);
+        if(n){ WI.push(spans.length); W.push(n); }
+        spans.push(s); frag.appendChild(s);
+      });
+      if(li < arr.length-1) frag.appendChild(document.createElement('br'));
+    });
+    el.appendChild(frag);
+  }
+
+  // ---------- prompter ----------
+  function openPrompter(){
+    const text = $('#text').value.trim();
+    if(!text){ alert('Paste your script first.'); return; }
+    mode = $('#mode').value;
+    store.set('text', $('#text').value); store.set('font', $('#fontSize').value);
+    store.set('lang', $('#lang').value);  store.set('mode', mode);
+
+    buildScript(text);
+    $('#script').style.fontSize = $('#fontSize').value + 'px';
+    $('#script').classList.toggle('mirror', mirror);
+    $('#guide').style.top = (GUIDE*100) + '%';
+    $('#voiceCtrls').classList.toggle('hidden', mode !== 'voice');
+    $('#sensBtn').textContent = 'Sens: ' + sensLevels[sensIdx][0];
+    $('#setup').classList.add('hidden');
+    $('#prompter').classList.remove('hidden');
+    cur = 0; y = targetY = 0; $('#scroller').scrollTop = 0;
+    paint(); setStatus('Press 🎤 Start mic, allow access, then read');
+    showBar();
+  }
+
+  function closePrompter(){
+    stop();
+    $('#prompter').classList.add('hidden');
+    $('#setup').classList.remove('hidden');
+  }
+
+  function setStatus(t){ $('#status').textContent = t; }
+
+  function paint(){
+    if(mode !== 'speech') { spans.forEach(s=>s.classList.remove('done','now')); return; }
+    const curSpan = cur < WI.length ? WI[cur] : spans.length;
+    for(let i=0;i<spans.length;i++){
+      const s = spans[i];
+      s.classList.toggle('done', i < curSpan);
+      s.classList.toggle('now', i === curSpan);
+    }
+    const ref = spans[Math.min(curSpan, spans.length-1)];
+    if(ref) targetY = Math.max(0, ref.offsetTop - $('#scroller').clientHeight*GUIDE + ref.offsetHeight*0.2);
+  }
+
+  // match the last few spoken words to the script near the cursor
+  function matchTail(tail){
+    if(!tail.length || !W.length) return;
+    const k = tail.length;
+    let best = -1, bestScore = 0, bestDist = 1e9;
+    const from = Math.max(0, cur-3), to = Math.min(W.length-1, cur+35);
+    for(let p=from; p<=to; p++){
+      let score = 0;
+      for(let j=0;j<k;j++){
+        const idx = p - (k-1-j);
+        if(idx>=0 && similar(W[idx], tail[j])) score += (j===k-1 ? 1.5 : 1);
+      }
+      const dist = Math.abs(p - cur);
+      if(score > bestScore || (score === bestScore && dist < bestDist)){
+        best = p; bestScore = score; bestDist = dist;
+      }
+    }
+    const need = k === 1 ? 1.5 : 2.5;            // last word + at least one more
+    if(best < 0 || bestScore < need) return;
+    if(k === 1 && best > cur + 2) return;          // single word: only tiny jumps
+    if(best + 1 > cur || bestScore >= 4){
+      cur = Math.min(W.length, best + 1);
+      paint();
+    }
+  }
+
+  // ---------- speech recognition mode ----------
+  function startSpeech(){
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if(!SR) return false;
+    rec = new SR();
+    rec.lang = $('#lang').value;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = e => {
+      const r = e.results[e.results.length-1];
+      const said = r[0].transcript;
+      $('#heard').textContent = said.slice(-80);
+      const tail = said.split(/\s+/).map(norm).filter(Boolean).slice(-5);
+      matchTail(tail);
+      lastVoice = performance.now();
+    };
+    rec.onerror = e => {
+      if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+        setStatus('Mic blocked'); alert('Microphone permission denied. Allow mic access for this site and try again.'); stop();
+      } else if(e.error !== 'no-speech' && e.error !== 'aborted'){
+        setStatus('Error: ' + e.error);
+      }
+    };
+    rec.onend = () => { if(running && mode==='speech') setTimeout(()=>{ try{ rec.start(); }catch(_){} }, 150); };
+    try { rec.start(); } catch(_){}
+    setStatus('Listening...');
+    return true;
+  }
+
+  // ---------- voice-level mode ----------
+  async function startVoice(){
+    try{
+      micStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+    }catch(e){
+      alert('Microphone permission denied or unavailable.'); return false;
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+    src.connect(analyser);
+    setStatus('Talk to scroll');
+    return true;
+  }
+  const buf = new Float32Array(1024);
+  function readLevel(){
+    if(!analyser) return 0;
+    analyser.getFloatTimeDomainData(buf);
+    let s=0; for(let i=0;i<buf.length;i++) s += buf[i]*buf[i];
+    return Math.sqrt(s/buf.length);
+  }
+
+  // ---------- start / stop ----------
+  async function start(){
+    if(running) return;
+    const hasSR = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    if(mode === 'speech' && !hasSR){
+      mode = 'voice'; store.set('mode','voice'); $('#mode').value = 'voice';
+      $('#voiceCtrls').classList.remove('hidden'); paint();
+    }
+    let ok = mode === 'speech' ? startSpeech() : await startVoice();
+    if(ok && mode === 'voice' && !hasSR) setStatus('Voice-level mode (this browser has no speech recognition)');
+    if(!ok) return;
+    running = true;
+    $('#playBtn').textContent = '🔴 Mic on (pause)'; $('#playBtn').classList.add('on');
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch(_){}
+    hideBarSoon();
+  }
+  function stop(){
+    running = false;
+    if(rec){ rec.onend = null; try{ rec.abort(); }catch(_){} rec = null; }
+    if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream = null; }
+    if(audioCtx){ audioCtx.close(); audioCtx = null; analyser = null; }
+    try { wakeLock?.release(); } catch(_){} wakeLock = null;
+    $('#playBtn').textContent = '🎤 Start mic'; $('#playBtn').classList.remove('on');
+    $('#meterFill').style.width = '0';
+    setStatus('Paused'); showBar();
+  }
+  function restart(){
+    cur = 0; y = targetY = 0; $('#scroller').scrollTop = 0; paint();
+  }
+
+  // ---------- animation loop ----------
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.1, (now-last)/1000); last = now;
+    const sc = $('#scroller');
+    const userActive = now < userScrollUntil;
+
+    if(mode === 'voice' && running){
+      level = readLevel();
+      const thr = sensLevels[sensIdx][1];
+      $('#meterFill').style.width = Math.min(100, level/thr*50) + '%';
+      $('#meterFill').style.background = level > thr ? '#2ecc71' : '#777';
+      if(level > thr) lastVoice = now;
+      // keep moving briefly after a word ends so it doesn't stutter between syllables
+      if(!userActive && now - lastVoice < 350){ y += speed*dt; targetY = y; }
+    } else if(mode === 'speech' && running){
+      const talking = now - lastVoice < 600;
+      $('#meterFill').style.width = talking ? '100%' : '15%';
+      $('#meterFill').style.background = talking ? '#2ecc71' : '#777';
+    }
+
+    if(!userActive){
+      if(mode === 'speech') y += (targetY - y) * Math.min(1, dt*5);
+      const max = sc.scrollHeight - sc.clientHeight;
+      y = Math.max(0, Math.min(max, y));
+      if(Math.abs(sc.scrollTop - y) > 0.5) sc.scrollTop = y;
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // manual scrolling: pause auto-follow briefly, then resync
+  const sc = $('#scroller');
+  ['wheel','touchmove'].forEach(ev => sc.addEventListener(ev, () => { userScrollUntil = performance.now() + 1500; }, {passive:true}));
+  sc.addEventListener('scroll', () => {
+    if(performance.now() < userScrollUntil){
+      y = targetY = sc.scrollTop;
+      if(mode === 'speech') syncCursorToGuide();
+    }
+  });
+  function syncCursorToGuide(){
+    const line = sc.scrollTop + sc.clientHeight*GUIDE;
+    for(let i=0;i<WI.length;i++){
+      if(spans[WI[i]].offsetTop + spans[WI[i]].offsetHeight > line){ cur = i; break; }
+    }
+    const curSpan = cur < WI.length ? WI[cur] : spans.length;
+    spans.forEach((s,i)=>{ s.classList.toggle('done', i<curSpan); s.classList.toggle('now', i===curSpan); });
+  }
+
+  // ---------- controls ----------
+  function setFont(d){
+    const f = Math.max(24, Math.min(200, +$('#fontSize').value + d));
+    $('#fontSize').value = f; store.set('font', f);
+    $('#script').style.fontSize = f + 'px';
+    if(mode === 'speech') paint();
+  }
+  $('#backBtn').onclick = closePrompter;
+  $('#playBtn').onclick = () => running ? stop() : start();
+  $('#restartBtn').onclick = restart;
+  $('#smallerBtn').onclick = () => setFont(-8);
+  $('#biggerBtn').onclick = () => setFont(8);
+  $('#mirrorBtn').onclick = () => { mirror = !mirror; store.set('mirror', mirror?'1':'0'); $('#script').classList.toggle('mirror', mirror); };
+  $('#slowerBtn').onclick = () => { speed = Math.max(15, speed-10); store.set('speed', speed); setStatus('Speed ' + speed); };
+  $('#fasterBtn').onclick = () => { speed = Math.min(400, speed+10); store.set('speed', speed); setStatus('Speed ' + speed); };
+  $('#sensBtn').onclick = () => { sensIdx = (sensIdx+1)%3; store.set('sens', sensIdx); $('#sensBtn').textContent = 'Sens: ' + sensLevels[sensIdx][0]; };
+
+  // auto-hide toolbar while running
+  let barTimer = null;
+  function showBar(){ $('#bar').classList.remove('fade'); clearTimeout(barTimer); if(running) hideBarSoon(); }
+  function hideBarSoon(){ clearTimeout(barTimer); barTimer = setTimeout(()=>{ if(running) $('#bar').classList.add('fade'); }, 2500); }
+  $('#prompter').addEventListener('pointermove', showBar);
+  $('#prompter').addEventListener('pointerdown', showBar);
+
+  document.addEventListener('keydown', e => {
+    if($('#prompter').classList.contains('hidden')) return;
+    if(e.code === 'Space'){ e.preventDefault(); running ? stop() : start(); }
+    else if(e.key === 'Escape') closePrompter();
+    else if(e.key === '+' || e.key === '=') setFont(8);
+    else if(e.key === '-') setFont(-8);
+    else if(e.key === 'ArrowDown'){ e.preventDefault(); nudge(1); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); nudge(-1); }
+    else if(e.key.toLowerCase() === 'm') $('#mirrorBtn').click();
+    else if(e.key.toLowerCase() === 'r') restart();
+  });
+  function nudge(dir){
+    if(mode === 'speech'){ cur = Math.max(0, Math.min(W.length, cur + dir*5)); paint(); }
+    else { y += dir*80; targetY = y; }
+  }
+
+  window.addEventListener('resize', () => { if(mode==='speech') paint(); });
+  document.addEventListener('visibilitychange', async () => {
+    if(document.visibilityState === 'visible' && running && !wakeLock){
+      try { wakeLock = await navigator.wakeLock?.request('screen'); } catch(_){}
+    }
+  });
+})();
+</script>
+</body>
+</html>
